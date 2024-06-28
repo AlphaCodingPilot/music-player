@@ -1,0 +1,28 @@
+
+--------
+COMMANDS
+pause (p / F7 / F4)                             - pauses the playlist
+resume (p / F7)                                 - resumes the playlist
+mute (m / F12)                                  - mutes the playlist
+unmute (m / F12)                                - unmutes the playlist 
+volume + (+ / F11)                              - increases the volume of the playlist by 10pp
+volume - (- / F10)                              - decreases the volume of the playlist by 10pp
+volume (v)                                      - shows the current volume of the playlist and the song
+set volume [volume] (v [volume])                - sets the volume of the playlist for the current session
+next (n / F8)                                   - skips to the next song
+restart song (rs / F6)                          - restarts the current song
+playlist (pl)                                   - lists all songs in the playlist and their index
+choose song [index / song] (c [index / song])   - play the song in the playlist at the given index or the the song if the name is provided instead
+enable keyboard (kb)                            - enables keyboard shortcuts
+disable keyboard (kb)                           - disables keyboard shortcuts
+enable shuffle (sh)                             - enables playlist shuffling
+disable shuffle (sh)                            - disables playlist shuffling
+star (s)                                        - sets the currently playing song as stared, which makes it get chosen more often as the next song
+unstar                                          - sets the currently playing song as not stared
+has lyrics                                      - sets the currently playing as having lyrics, excluding it from the playlist when no lyrics mode is activated
+has no lyrics                                   - sets the currently playing as having no lyrics
+no lyrics mode (l / F9)                         - activated no lyrics mode, which excludes songs with lyrics from the playlist
+lyrics mode (l / F9)                            - deactivates no lyrics mode
+commands                                        - lists all commands
+probabilities                                   - lists the probabilities of a songs in the playlist to be chosen
+exit                                            - exits the program

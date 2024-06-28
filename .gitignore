@@ -1,0 +1,6 @@
+/target
+/.vscode
+/playlist/*
+/playlist-settings.json
+/update.cmd
+/todo.txt
