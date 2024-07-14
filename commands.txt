@@ -7,16 +7,24 @@ mute (m / F12)                                  - mutes the playlist
 unmute (m / F12)                                - unmutes the playlist 
 volume + (+ / F11)                              - increases the volume of the playlist by 10pp
 volume - (- / F10)                              - decreases the volume of the playlist by 10pp
-volume (v)                                      - shows the current volume of the playlist and the song
 set volume [volume] (v [volume])                - sets the volume of the playlist for the current session
+song volume + (sv+)                             - increases the song volume of the currently playing song by 10% relative to the rest of the playlist
+song volume - (sv-)                             - decreases the song volume of the currently playing song by 10% relative to the rest of the playlist
+song volume [volume] (sv [volume])              - sets the song volume of the currently playing song relative to the rest of the playlist
+volume (v)                                      - shows the current volume of the playlist and the song
 next (n / F8)                                   - skips to the next song
-restart song (rs / F6)                          - restarts the current song
-playlist (pl)                                   - lists all songs in the playlist and their index
 choose song [index / song] (c [index / song])   - play the song in the playlist at the given index or the the song if the name is provided instead
+restart song (rs / F6)                          - restarts the current song
+start                                           - plays the first song of the playlist
+pause after song                                - pauses the playlist after the current song has finished playing
+next song [index / song]                        - plays the given song after the current one
+continue after song                             - reverts any 'pause after song' or 'next song' commands and plays a new song after the current song instead
+playlist (pl)                                   - lists all songs in the playlist and their index (indices start at 0)
 enable keyboard (kb)                            - enables keyboard shortcuts
 disable keyboard (kb)                           - disables keyboard shortcuts
 enable shuffle (sh)                             - enables playlist shuffling
 disable shuffle (sh)                            - disables playlist shuffling
+reset probabilities                             - resets the song probabilities
 star (s)                                        - sets the currently playing song as stared, which makes it get chosen more often as the next song
 unstar                                          - sets the currently playing song as not stared
 has lyrics                                      - sets the currently playing as having lyrics, excluding it from the playlist when no lyrics mode is activated

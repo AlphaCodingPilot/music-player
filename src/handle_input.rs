@@ -1,11 +1,11 @@
-use std::{fs, path::PathBuf, process};
+use std::{fs, path::PathBuf, process, time::Instant};
 
 use rdev::{Event, EventType, Key};
-use rodio::Sink;
+use rodio::{Sink, Source};
 
-use crate::playlist_settings::{self, SessionSettings};
+use crate::playlist_settings::{self, AfterSong, SessionSettings};
 
-pub fn handle_command(
+pub fn handle_console_commands(
     input_buffer: &str,
     audio_player: &Sink,
     session_settings: &mut SessionSettings,
@@ -16,41 +16,22 @@ pub fn handle_command(
     match input.as_str() {
         "" => (),
         "pause" => {
-            if !audio_player.is_paused() {
-                audio_player.pause();
-                println!("paused");
-            }
+            pause(session_settings, audio_player);
         }
         "resume" | "r" | "play" => {
-            if audio_player.is_paused() {
-                audio_player.play();
-                println!("resumed");
-            }
+            resume(session_settings, audio_player);
         }
         "p" | "k" => {
-            pause_or_play(audio_player);
+            pause_or_play(session_settings, audio_player);
         }
         "mute" => {
-            if !session_settings.is_muted {
-                audio_player.set_volume(0.0);
-                session_settings.is_muted = true;
-                println!("muted");
-            }
+            mute(session_settings, audio_player);
         }
         "unmute" => {
-            if session_settings.is_muted {
-                let song_volume = playlist_settings::get_persistent_settings()
-                    .get_song_settings(&session_settings.current_song_name)
-                    .song_volume;
-                let volume = playlist_settings::get_persistent_settings().volume;
-                audio_player.set_volume(volume * song_volume);
-                session_settings.is_muted = false;
-                println!("unmuted");
-                println!("playlist volume: {}%", (volume * 100.0).round());
-            }
+            unmute(session_settings, audio_player);
         }
         "m" => {
-            mute_or_unmute(session_settings, audio_player);
+            switch_muted(session_settings, audio_player);
         }
         "volume+" | "v+" | "+" => {
             increase_volume(session_settings, audio_player);
@@ -59,50 +40,13 @@ pub fn handle_command(
             decrease_volume(session_settings, audio_player);
         }
         "songvolume+" | "sv+" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            settings.song_volume += 0.1;
-            if settings.song_volume > 1.0 {
-                settings.song_volume = 1.0;
-            }
-            let playlist_volume = playlist_settings::get_persistent_settings().volume;
-            audio_player.set_volume(settings.song_volume * playlist_volume);
-            session_settings.is_muted = false;
-            println!("song volume: {}%", (settings.song_volume * 100.0).round());
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            increase_song_volume(session_settings, audio_player);
         }
         "songvolume-" | "sv-" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            settings.song_volume -= 0.1;
-            if settings.song_volume < 0.0 {
-                settings.song_volume = 0.0;
-            }
-            let playlist_volume = playlist_settings::get_persistent_settings().volume;
-            audio_player.set_volume(settings.song_volume * playlist_volume);
-            println!("song volume: {}%", (settings.song_volume * 100.0).round());
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            decrease_song_volume(session_settings, audio_player);
         }
         "volume" | "v" => {
-            let volume = playlist_settings::get_persistent_settings().volume;
-            let song_volume = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name)
-                .song_volume;
-            println!("playlist volume: {}%", (volume * 100.0).round());
-            println!("song volume: {}%", (song_volume * 100.0).round());
-            println!(
-                "combined volume: {}%",
-                (volume * song_volume * 100.0).round()
-            );
-            if session_settings.is_muted {
-                println!("The playlist is muted!");
-            }
+            print_volume(session_settings);
         }
         "nextsong" | "next" | "n" | "skip" => {
             next_song(audio_player, paths, session_settings);
@@ -110,329 +54,620 @@ pub fn handle_command(
         "restartsong" | "restart" | "rs" => {
             restart_song(audio_player, paths, session_settings);
         }
+        "start" => {
+            go_to_first_song(audio_player, paths, session_settings);
+        }
+        "pauseaftersong" | "pauseaftercurrentsong" | "pausenext" => {
+            pause_after_song(session_settings);
+        }
+        "continueaftersong" | "resetaftersong" => {
+            continue_after_song(session_settings);
+        }
         "playlist" => {
-            let list = paths
-                .iter()
-                .map(|path| crate::get_song_name(path))
-                .enumerate()
-                .map(|(i, song)| {
-                    let spaces = "Index".len() - i.to_string().len();
-                    format!("{}{i} - {song}", " ".repeat(spaces))
-                })
-                .collect::<Vec<String>>()
-                .join("\n");
-            println!("Index - Song\n{list}\n");
+            print_playlist(paths);
         }
         "enablekeyboard" | "ekb" => {
-            if !session_settings.key_events_enabled {
-                session_settings.key_events_enabled = true;
-                println!("keyboard shortcuts enabled");
-            }
+            enable_keyboard_input(session_settings);
         }
         "disablekeyboard" | "dkb" => {
-            if !session_settings.key_events_enabled {
-                session_settings.key_events_enabled = false;
-                println!("keyboard shortcuts disabled");
-            }
+            disable_keyboard_input(session_settings);
         }
         "keyboard" | "kb" | "ks" => {
-            if session_settings.key_events_enabled {
-                session_settings.key_events_enabled = false;
-                println!("keyboard shortcuts disabled");
-            } else {
-                session_settings.key_events_enabled = true;
-                println!("keyboard shortcuts enabled");
-            }
+            switch_keyboard_input(session_settings);
         }
         "enableshuffle" | "es" => {
-            if !session_settings.shuffle {
-                session_settings.shuffle = true;
-                println!("shuffle playlist enabled");
-            }
+            enable_shuffling(session_settings, paths);
         }
         "disableshuffle" | "ds" => {
-            if !session_settings.shuffle {
-                session_settings.shuffle = false;
-                println!("shuffle playlist disabled");
-            }
+            disable_shuffling(session_settings);
         }
         "shuffle" | "sh" => {
-            if session_settings.shuffle {
-                session_settings.shuffle = false;
-                println!("shuffle playlist disabled");
-            } else {
-                session_settings.shuffle = true;
-                println!("shuffle playlist enabled");
-            }
+            switch_shuffling(session_settings, paths);
+        }
+        "resetprobabilities" => {
+            reset_probabilities(paths, session_settings);
         }
         "star" | "s" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            settings.starred = true;
-            println!(
-                "{} is now starred. It will get chosen twice as often",
-                session_settings.current_song_name
-            );
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            star(session_settings);
         }
         "unstar" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            if settings.starred {
-                settings.starred = false;
-                println!(
-                    "{} is no longer starred",
-                    session_settings.current_song_name
-                );
-            } else {
-                println!("{} is not starred", session_settings.current_song_name);
-            }
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            unstar(session_settings);
+        }
+        "starred" | "starredsongs" => {
+            print_starred_songs(paths);
         }
         "haslyrics" | "setlyrics" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            settings.has_lyrics = true;
-            println!(
-                "{} is set to have lyrics",
-                session_settings.current_song_name
-            );
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            set_lyrics(session_settings);
         }
         "hasnolyrics" | "setnolyrics" => {
-            let mut settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            if settings.has_lyrics {
-                settings.has_lyrics = false;
-                println!(
-                    "{} is no longer set to have lyrics",
-                    session_settings.current_song_name
-                );
-            } else {
-                println!(
-                    "{} is not set to have lyrics",
-                    session_settings.current_song_name
-                );
-            }
-            playlist_settings::update_song_settings(
-                session_settings.current_song_name.clone(),
-                settings,
-            );
+            set_no_lyrics(session_settings);
         }
-        "nolyrics" | "lyricsoff" | "nolyricsmode" | "deactivatelyrics" | "excludelyrics" => {
-            session_settings.exclude_lyrics = true;
-            println!("Songs with lyrics will now be excluded from the playlist");
+        "nolyrics" | "lyricsoff" | "nolyricsmode" | "deactivatelyrics" | "excludelyrics"
+        | "focusmode" | "focus" | "focusmodeon" => {
+            turn_off_lyrics_mode(session_settings);
         }
-        "lyrics" | "lyricson" | "lyricsmode" | "activatelyrics" | "includelyrics" => {
-            session_settings.exclude_lyrics = false;
-            println!("songs with lyrics will now be included to the playlist");
+        "lyrics" | "lyricson" | "lyricsmode" | "activatelyrics" | "includelyrics"
+        | "focusmodeoff" => {
+            turn_on_lyrics_mode(session_settings);
         }
         "switchlyricsmode" | "l" => {
             switch_lyrics_mode(session_settings);
         }
-        "playliststatus" => {
-            println!("current song: {}", session_settings.current_song_name);
-            println!(
-                "playlist volume: {}",
-                playlist_settings::get_persistent_settings().volume
-            );
-            if session_settings.is_muted {
-                println!("playlist is muted");
-            }
-            if !session_settings.key_events_enabled {
-                println!("keyboard shortcuts are disabled");
-            }
-            if !session_settings.shuffle {
-                println!("playlist shuffling is disabled");
-            }
-            if session_settings.exclude_lyrics {
-                println!("no lyrics mode is enabled");
-            }
-        }
-        "songstatus" | "status" | "info" => {
-            let song_settings = playlist_settings::get_persistent_settings()
-                .get_song_settings(&session_settings.current_song_name);
-            println!("current song: {}", session_settings.current_song_name);
-            println!("song volume: {}", song_settings.song_volume);
-            if song_settings.starred {
-                println!("This song is starred");
-            }
-            println!("playlist index: {}", session_settings.current_song_index);
+        "status" | "info" => {
+            print_status(session_settings, paths);
         }
         "index" | "playlistindex" => {
-            println!("playlist index: {}", session_settings.current_song_index);
+            print_index(session_settings);
+        }
+        "progress" | "songprogress" => {
+            print_progress(session_settings);
         }
         "songprobabilities" | "probabilities" | "showprobabilities" => {
-            let settings = playlist_settings::get_persistent_settings();
-            let mut probabilities = Vec::new();
-            let mut sum = 0;
-            for i in 0..paths.len() {
-                let song_settings = settings.get_song_settings(&crate::get_song_name(&paths[i]));
-                let p = session_settings.song_probability_distribution[i];
-                let star_factor = if song_settings.starred { 2 } else { 1 };
-                sum += p * star_factor;
-                probabilities.push(p * star_factor);
-            }
-            let message = probabilities
-                .into_iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    (
-                        crate::get_song_name(&paths[i]),
-                        p as f32 * 100.0 / sum as f32,
-                    )
-                })
-                .map(|(song, p)| format!("{song} - {p:.2}%"))
-                .collect::<Vec<String>>()
-                .join("\n");
-            println!("{message}");
+            print_song_probabilities(paths, session_settings);
         }
         "commands" | "help" => {
-            let file_path = "commands.txt";
-            let contents = fs::read_to_string(file_path).expect("Failed to read the file");
-            println!("{contents}");
+            print_commands();
         }
         "terminate" | "exit" | "close" => {
-            println!("closing audio player");
-            process::exit(0);
+            exit_program();
         }
         msg if msg.starts_with("choosesong") => {
             let new_song = msg.split_once("choosesong").unwrap().1;
-            match new_song.parse::<usize>() {
-                Ok(index) => {
-                    audio_player.clear();
-                    let (source, song) = crate::index_song(paths, index);
-                    audio_player.append(source);
-                    audio_player.play();
-                    println!("Now playing {song}");
-                }
-                Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
-                    Some(index) => {
-                        audio_player.clear();
-                        let (source, song) = crate::index_song(paths, index);
-                        audio_player.append(source);
-                        audio_player.play();
-                        println!("Now playing {song}");
-                    }
-                    None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
-                }
-            }
+            choose_song(new_song, audio_player, paths, session_settings);
         }
         msg if msg.starts_with("choose") => {
             let new_song = msg.split_once("choose").unwrap().1;
-            match new_song.parse::<usize>() {
-                Ok(index) => {
-                    audio_player.clear();
-                    let (source, song) = crate::index_song(paths, index);
-                    audio_player.append(source);
-                    audio_player.play();
-                    println!("Now playing {song}");
-                }
-                Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
-                    Some(index) => {
-                        audio_player.clear();
-                        let (source, song) = crate::index_song(paths, index);
-                        audio_player.append(source);
-                        audio_player.play();
-                        println!("Now playing {song}");
-                    }
-                    None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
-                }
-            }
+            choose_song(new_song, audio_player, paths, session_settings);
         }
         msg if msg.starts_with('c') => {
             let new_song = msg.split_once('c').unwrap().1;
-            match new_song.parse::<usize>() {
-                Ok(index) => {
-                    audio_player.clear();
-                    let (source, song) = crate::index_song(paths, index);
-                    audio_player.append(source);
-                    audio_player.play();
-                    println!("Now playing {song}");
-                }
-                Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
-                    Some(index) => {
-                        audio_player.clear();
-                        let (source, song) = crate::index_song(paths, index);
-                        audio_player.append(source);
-                        audio_player.play();
-                        println!("Now playing {song}");
-                    }
-                    None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
-                }
-            }
+            choose_song(new_song, audio_player, paths, session_settings);
         }
         msg if msg.starts_with("play") => {
             let new_song = msg.split_once("play").unwrap().1;
-            match new_song.parse::<usize>() {
-                Ok(index) => {
-                    audio_player.clear();
-                    let (source, song) = crate::index_song(paths, index);
-                    audio_player.append(source);
-                    audio_player.play();
-                    println!("Now playing {song}");
-                }
-                Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
-                    Some(index) => {
-                        audio_player.clear();
-                        let (source, song) = crate::index_song(paths, index);
-                        audio_player.append(source);
-                        audio_player.play();
-                        println!("Now playing {song}");
-                    }
-                    None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
-                }
-            }
+            choose_song(new_song, audio_player, paths, session_settings);
         }
         msg if msg.starts_with("setvolume") || msg.starts_with("volume") => {
-            let mut new_volume = msg.split_once("volume").unwrap().1;
-            if new_volume.ends_with('%') {
-                new_volume = new_volume.split_once('%').unwrap().0;
-            }
-            match new_volume.parse::<f32>() {
-                Ok(new_volume) => {
-                    let mut settings = playlist_settings::get_persistent_settings();
-                    settings.volume = new_volume * 0.01;
-                    let song_volume = playlist_settings::get_persistent_settings()
-                        .get_song_settings(&session_settings.current_song_name)
-                        .song_volume;
-                    audio_player.set_volume(settings.volume * song_volume);
-                    session_settings.is_muted = settings.volume == 0.0;
-                    println!("playlist volume: {}%", (settings.volume * 100.0).round());
-                    playlist_settings::update_settings(&settings);
-                }
-                Err(_) => println!("this command requires a number as volume like \"50%\""),
-            }
+            let volume = msg.split_once("volume").unwrap().1;
+            set_volume(volume, session_settings, audio_player);
         }
         msg if msg.starts_with('v') => {
-            let mut new_volume = msg.split_once('v').unwrap().1.trim();
-            if new_volume.ends_with('%') {
-                new_volume = new_volume.split_once('%').unwrap().0;
-            }
-            match new_volume.parse::<f32>() {
-                Ok(new_volume) => {
-                    let mut settings = playlist_settings::get_persistent_settings();
-                    settings.volume = new_volume * 0.01;
-                    let song_volume = playlist_settings::get_persistent_settings()
-                        .get_song_settings(&session_settings.current_song_name)
-                        .song_volume;
-                    audio_player.set_volume(settings.volume * song_volume);
-                    println!("playlist volume: {}%", (settings.volume * 100.0).round());
-                    playlist_settings::update_settings(&settings);
-                }
-                Err(_) => println!("this command requires a number as volume like \"50%\""),
-            }
+            let volume = msg.split_once('v').unwrap().1.trim();
+            set_volume(volume, session_settings, audio_player);
+        }
+        msg if msg.starts_with("songvolume") => {
+            let volume = msg.split_once("songvolume").unwrap().1;
+            set_song_volume(volume, session_settings, audio_player);
+        }
+        msg if msg.starts_with("sv") => {
+            let volume = msg.split_once("sv").unwrap().1;
+            set_song_volume(volume, session_settings, audio_player);
+        }
+        msg if msg.starts_with("nextsong") => {
+            let next_song = msg.split_once("nextsong").unwrap().1;
+            choose_next_song(session_settings, next_song, paths);
+        }
+        msg if msg.starts_with("choosenextsong") => {
+            let next_song = msg.split_once("choosenextsong").unwrap().1;
+            choose_next_song(session_settings, next_song, paths);
+        }
+        msg if msg.starts_with("aftersong") => {
+            let next_song = msg.split_once("aftersong").unwrap().1;
+            choose_next_song(session_settings, next_song, paths);
+        }
+        msg if msg.starts_with("next") => {
+            let next_song = msg.split_once("next").unwrap().1;
+            choose_next_song(session_settings, next_song, paths);
         }
         _ => println!("unknown command"),
+    }
+}
+
+pub fn handle_key_event(
+    key_event: &Event,
+    audio_player: &Sink,
+    session_settings: &mut SessionSettings,
+    paths: &[PathBuf],
+) {
+    let EventType::KeyPress(key) = key_event.event_type else {
+        return;
+    };
+    match key {
+        Key::F7 | Key::F4 => {
+            pause_or_play(session_settings, audio_player);
+        }
+        Key::F11 => {
+            increase_volume(session_settings, audio_player);
+        }
+        Key::F10 => {
+            decrease_volume(session_settings, audio_player);
+        }
+        Key::F12 => {
+            switch_muted(session_settings, audio_player);
+        }
+        Key::F8 => {
+            next_song(audio_player, paths, session_settings);
+        }
+        Key::F6 => {
+            restart_song(audio_player, paths, session_settings);
+        }
+        Key::F9 => {
+            switch_lyrics_mode(session_settings);
+        }
+        _ => (),
+    }
+}
+
+fn pause(session_settings: &mut SessionSettings, audio_player: &Sink) {
+    if !audio_player.is_paused() {
+        audio_player.pause();
+        session_settings.song_progress += session_settings.song_start.elapsed();
+        println!("paused");
+    }
+}
+
+fn resume(session_settings: &mut SessionSettings, audio_player: &Sink) {
+    if audio_player.is_paused() {
+        audio_player.play();
+        session_settings.song_start = Instant::now();
+        println!("resumed");
+    }
+}
+
+fn mute(session_settings: &mut SessionSettings, audio_player: &Sink) {
+    if !session_settings.is_muted {
+        audio_player.set_volume(0.0);
+        session_settings.is_muted = true;
+        println!("muted");
+    }
+}
+
+fn unmute(session_settings: &mut SessionSettings, audio_player: &Sink) {
+    if session_settings.is_muted {
+        let song_volume = playlist_settings::get_persistent_settings()
+            .get_song_settings(&session_settings.current_song_name)
+            .song_volume;
+        let volume = playlist_settings::get_persistent_settings().volume;
+        audio_player.set_volume(volume * song_volume);
+        session_settings.is_muted = false;
+        println!("unmuted");
+        println!("playlist volume: {}%", volume * 100.0);
+    }
+}
+
+fn increase_song_volume(session_settings: &SessionSettings, audio_player: &Sink) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    settings.song_volume += 0.1;
+    if settings.song_volume > 1.0 {
+        settings.song_volume = 1.0;
+    }
+    let playlist_volume = playlist_settings::get_persistent_settings().volume;
+    if !session_settings.is_muted {
+        audio_player.set_volume(settings.song_volume * playlist_volume);
+    }
+    println!("song volume: {}%", settings.song_volume * 100.0);
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn decrease_song_volume(session_settings: &SessionSettings, audio_player: &Sink) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    settings.song_volume -= 0.1;
+    if settings.song_volume < 0.0 {
+        settings.song_volume = 0.0;
+    }
+    let playlist_volume = playlist_settings::get_persistent_settings().volume;
+    audio_player.set_volume(settings.song_volume * playlist_volume);
+    println!("song volume: {}%", settings.song_volume * 100.0);
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn print_volume(session_settings: &SessionSettings) {
+    let volume = playlist_settings::get_persistent_settings().volume;
+    let song_volume = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name)
+        .song_volume;
+    println!("playlist volume: {}%", volume * 100.0);
+    println!("song volume: {}%", song_volume * 100.0);
+    println!("combined volume: {}%", volume * song_volume * 100.0);
+    if session_settings.is_muted {
+        println!("The playlist is muted!");
+    }
+}
+
+fn go_to_first_song(
+    audio_player: &Sink,
+    paths: &[PathBuf],
+    session_settings: &mut SessionSettings,
+) {
+    choose_song_by_index(audio_player, paths, 0, session_settings);
+}
+
+fn print_playlist(paths: &[PathBuf]) {
+    let list = paths
+        .iter()
+        .map(|path| crate::get_song_name(path))
+        .enumerate()
+        .map(|(i, song)| {
+            let spaces = "Index".len() - i.to_string().len();
+            format!("{}{i} - {song}", " ".repeat(spaces))
+        })
+        .collect::<Vec<String>>()
+        .join("\n");
+    println!("Index - Song\n{list}\n");
+}
+
+fn enable_keyboard_input(session_settings: &mut SessionSettings) {
+    if !session_settings.key_events_enabled {
+        session_settings.key_events_enabled = true;
+        println!("keyboard shortcuts enabled");
+    }
+}
+
+fn disable_keyboard_input(session_settings: &mut SessionSettings) {
+    if !session_settings.key_events_enabled {
+        session_settings.key_events_enabled = false;
+        println!("keyboard shortcuts disabled");
+    }
+}
+
+fn switch_keyboard_input(session_settings: &mut SessionSettings) {
+    if session_settings.key_events_enabled {
+        session_settings.key_events_enabled = false;
+        println!("keyboard shortcuts disabled");
+    } else {
+        session_settings.key_events_enabled = true;
+        println!("keyboard shortcuts enabled");
+    }
+}
+
+fn enable_shuffling(session_settings: &mut SessionSettings, paths: &[PathBuf]) {
+    if !session_settings.shuffle {
+        session_settings.shuffle = true;
+        for i in 0..paths.len() {
+            session_settings.song_probability_distribution[i] = 1;
+        }
+        println!("shuffle playlist enabled");
+    }
+}
+
+fn disable_shuffling(session_settings: &mut SessionSettings) {
+    if !session_settings.shuffle {
+        session_settings.shuffle = false;
+        println!("shuffle playlist disabled");
+    }
+}
+
+fn switch_shuffling(session_settings: &mut SessionSettings, paths: &[PathBuf]) {
+    if session_settings.shuffle {
+        session_settings.shuffle = false;
+        for i in 0..paths.len() {
+            session_settings.song_probability_distribution[i] = 1;
+        }
+        println!("shuffle playlist disabled");
+    } else {
+        session_settings.shuffle = true;
+        println!("shuffle playlist enabled");
+    }
+}
+
+fn reset_probabilities(paths: &[PathBuf], session_settings: &mut SessionSettings) {
+    for i in 0..paths.len() {
+        session_settings.song_probability_distribution[i] = 1;
+    }
+}
+
+fn star(session_settings: &SessionSettings) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    settings.starred = true;
+    println!(
+        "{} is now starred. It will get chosen twice as often",
+        session_settings.current_song_name
+    );
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn unstar(session_settings: &SessionSettings) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    if settings.starred {
+        settings.starred = false;
+        println!(
+            "{} is no longer starred",
+            session_settings.current_song_name
+        );
+    } else {
+        println!("{} is not starred", session_settings.current_song_name);
+    }
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn print_starred_songs(paths: &[PathBuf]) {
+    println!("starred songs:");
+    let settings = playlist_settings::get_persistent_settings();
+    for path in paths {
+        let song = crate::get_song_name(path);
+        if settings.get_song_settings(&song).starred {
+            println!("{song}");
+        }
+    }
+}
+
+fn set_lyrics(session_settings: &SessionSettings) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    settings.has_lyrics = true;
+    println!(
+        "{} is set to have lyrics",
+        session_settings.current_song_name
+    );
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn set_no_lyrics(session_settings: &SessionSettings) {
+    let mut settings = playlist_settings::get_persistent_settings()
+        .get_song_settings(&session_settings.current_song_name);
+    if settings.has_lyrics {
+        settings.has_lyrics = false;
+        println!(
+            "{} is no longer set to have lyrics",
+            session_settings.current_song_name
+        );
+    } else {
+        println!(
+            "{} is not set to have lyrics",
+            session_settings.current_song_name
+        );
+    }
+    playlist_settings::update_song_settings(session_settings.current_song_name.clone(), settings);
+}
+
+fn turn_off_lyrics_mode(session_settings: &mut SessionSettings) {
+    session_settings.exclude_lyrics = true;
+    println!("Songs with lyrics will now be excluded from the playlist");
+}
+
+fn turn_on_lyrics_mode(session_settings: &mut SessionSettings) {
+    session_settings.exclude_lyrics = false;
+    println!("songs with lyrics will now be included to the playlist");
+}
+
+fn print_status(session_settings: &SessionSettings, paths: &[PathBuf]) {
+    println!("current song: {}", session_settings.current_song_name);
+    let persistent_settings = playlist_settings::get_persistent_settings();
+    println!(
+        "playlist volume: {}",
+        persistent_settings.volume
+    );
+    if session_settings.is_muted {
+        println!("playlist is muted");
+    }
+    match session_settings.after_song {
+        AfterSong::Pause => println!("the playlist will pause after the current song"),
+        AfterSong::PlaySong(next_song) => println!("the next song is set as {}", crate::get_song_name(&paths[next_song])),
+        AfterSong::Continue => (),
+    }
+    if !session_settings.key_events_enabled {
+        println!("keyboard shortcuts are disabled");
+    }
+    if !session_settings.shuffle {
+        println!("playlist shuffling is disabled");
+    }
+    if session_settings.exclude_lyrics {
+        println!("no lyrics mode is enabled");
+    }
+    let song_settings = persistent_settings
+        .get_song_settings(&session_settings.current_song_name);
+    println!(
+        "current song: {} ({})",
+        session_settings.current_song_name,
+        crate::format_duration(&session_settings.song_duration)
+    );
+    println!("song volume: {}% (playing at {}%)", song_settings.song_volume, session_settings.playback_volume());
+    if song_settings.starred {
+        println!("this song is starred");
+    }
+    if song_settings.has_lyrics {
+        println!("this song has lyrics");
+    }
+    println!("playlist index: {}", session_settings.current_song_index);
+}
+
+fn print_index(session_settings: &SessionSettings) {
+    println!("playlist index: {}", session_settings.current_song_index);
+}
+
+fn print_progress(session_settings: &SessionSettings) {
+    println!(
+        "{}: {}/{} ({}%)",
+        session_settings.current_song_name,
+        crate::format_duration(
+            &session_settings.song_progress()
+        ),
+        crate::format_duration(&session_settings.song_duration),
+        ((session_settings.song_progress().as_secs_f32()
+            / session_settings.song_duration.as_secs_f32())
+            * 100.0)
+            .round()
+    );
+}
+
+fn print_song_probabilities(paths: &[PathBuf], session_settings: &SessionSettings) {
+    let settings = playlist_settings::get_persistent_settings();
+    let mut probabilities = Vec::new();
+    let mut sum = 0;
+    for i in 0..paths.len() {
+        let song_settings = settings.get_song_settings(&crate::get_song_name(&paths[i]));
+        let base_probability = session_settings.song_probability_distribution[i];
+        let p = base_probability;
+        let star_factor = if song_settings.starred { 2 } else { 1 };
+        sum += p * star_factor;
+        probabilities.push((p * star_factor, base_probability));
+    }
+    let message = probabilities
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            (
+                crate::get_song_name(&paths[i]),
+                p.0 as f32 * 100.0 / sum as f32,
+                p.1,
+            )
+        })
+        .map(|(song, percentage, base)| format!("{song} - {percentage:.2}% ({base}"))
+        .collect::<Vec<String>>()
+        .join("\n");
+    println!("{message}");
+}
+
+fn print_commands() {
+    let file_path = "commands.txt";
+    let contents = fs::read_to_string(file_path).expect("Failed to read the file");
+    println!("{contents}");
+}
+
+fn exit_program() {
+    println!("closing audio player");
+    process::exit(0);
+}
+
+fn set_song_volume(volume: &str, session_settings: &SessionSettings, audio_player: &Sink) {
+    let mut new_volume = volume;
+    if new_volume.ends_with('%') {
+        new_volume = new_volume.split_once('%').unwrap().0;
+    }
+    match new_volume.parse::<f32>() {
+        Ok(new_volume) => {
+            let mut settings = playlist_settings::get_persistent_settings()
+                .get_song_settings(&session_settings.current_song_name);
+            settings.song_volume = new_volume * 0.01;
+            let playlist_volume = playlist_settings::get_persistent_settings().volume;
+            if !session_settings.is_muted {
+                audio_player.set_volume(settings.song_volume * playlist_volume);
+            }
+            println!("song volume: {}%", settings.song_volume * 100.0);
+            playlist_settings::update_song_settings(
+                session_settings.current_song_name.clone(),
+                settings,
+            );
+        }
+        Err(_) => println!("this command requires a number as volume like \"50%\""),
+    }
+}
+
+fn set_volume(volume: &str, session_settings: &mut SessionSettings, audio_player: &Sink) {
+    let mut new_volume = volume;
+    if new_volume.ends_with('%') {
+        new_volume = new_volume.split_once('%').unwrap().0;
+    }
+    match new_volume.parse::<f32>() {
+        Ok(new_volume) => {
+            let mut settings = playlist_settings::get_persistent_settings();
+            settings.volume = new_volume * 0.01;
+            let song_volume = playlist_settings::get_persistent_settings()
+                .get_song_settings(&session_settings.current_song_name)
+                .song_volume;
+            audio_player.set_volume(settings.volume * song_volume);
+            session_settings.is_muted = settings.volume == 0.0;
+            println!("playlist volume: {}%", settings.volume * 100.0);
+            playlist_settings::update_settings(&settings);
+        }
+        Err(_) => println!("this command requires a number as volume like \"50%\""),
+    }
+}
+
+fn choose_song(
+    new_song: &str,
+    audio_player: &Sink,
+    paths: &[PathBuf],
+    session_settings: &mut SessionSettings,
+) {
+    match new_song.parse::<usize>() {
+        Ok(index) => {
+            if index >= paths.len() {
+                println!("the given index does not exist in the playlist");
+                return;
+            }
+            choose_song_by_index(audio_player, paths, index, session_settings);
+        }
+        Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
+            Some(index) => {
+                audio_player.clear();
+                let (source, song) = crate::index_song(paths, index);
+                audio_player.append(source);
+                audio_player.play();
+                println!("Now playing {song}");
+            }
+            None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
+        }
+    }
+}
+
+fn choose_song_by_index(
+    audio_player: &Sink,
+    paths: &[PathBuf],
+    index: usize,
+    session_settings: &mut SessionSettings,
+) {
+    audio_player.clear();
+    let (source, file_name) = crate::index_song(paths, index);
+    session_settings.song_duration = source
+        .total_duration()
+        .expect("Failed to get song duration");
+    println!(
+        "Now playing: {file_name} ({})",
+        crate::format_duration(&session_settings.song_duration)
+    );
+    let settings = &playlist_settings::get_persistent_settings();
+    let song_settings = settings.get_song_settings(&file_name);
+    let song_volume = song_settings.song_volume;
+    let playlist_volume = settings.volume;
+    if (song_volume - 0.5).abs() > f32::EPSILON {
+        println!(
+            "Song volume: {}% (playing at {}% volume)",
+            (song_volume * 100.0).round(),
+            (song_volume * playlist_volume * 100.0).round()
+        );
+    }
+    if song_settings.starred {
+        println!("This song is starred");
+    }
+    audio_player.append(source);
+    let song_settings = settings.get_song_settings(&file_name);
+    let track_volume = song_settings.song_volume * settings.volume;
+    audio_player.set_volume(track_volume);
+    audio_player.play();
+    session_settings.current_song_index = index;
+    session_settings.current_song_name = file_name;
+    session_settings.song_start = Instant::now();
+    session_settings.after_song = AfterSong::Continue;
+    if session_settings.shuffle {
+        for i in 0..paths.len() {
+            session_settings.song_probability_distribution[i] += 1;
+        }
+        session_settings.song_probability_distribution[index] = 0;
     }
 }
 
@@ -459,12 +694,11 @@ fn restart_song(audio_player: &Sink, paths: &[PathBuf], session_settings: &mut S
 
 fn next_song(audio_player: &Sink, paths: &[PathBuf], session_settings: &mut SessionSettings) {
     audio_player.clear();
-    let (source, new_song, song_name) = crate::play_next_song(paths, session_settings);
-    session_settings.current_song_index = new_song;
+    let (source, _, song_name) = crate::play_next_song(paths, session_settings);
     audio_player.append(source);
     let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&song_name);
-    session_settings.current_song_name = song_name;
     audio_player.set_volume(session_settings.playback_volume() * song_settings.song_volume);
+    session_settings.after_song = AfterSong::Continue;
     audio_player.play();
 }
 
@@ -479,7 +713,7 @@ fn decrease_volume(session_settings: &mut SessionSettings, audio_player: &Sink) 
         .song_volume;
     audio_player.set_volume(settings.volume * song_volume);
     session_settings.is_muted = settings.volume == 0.0;
-    println!("playlist volume: {}%", (settings.volume * 100.0).round());
+    println!("playlist volume: {}%", settings.volume * 100.0);
     playlist_settings::update_settings(&settings);
 }
 
@@ -494,11 +728,11 @@ fn increase_volume(session_settings: &mut SessionSettings, audio_player: &Sink) 
         .song_volume;
     audio_player.set_volume(settings.volume * song_volume);
     session_settings.is_muted = false;
-    println!("playlist volume: {}%", (settings.volume * 100.0).round());
+    println!("playlist volume: {}%", settings.volume * 100.0);
     playlist_settings::update_settings(&settings);
 }
 
-fn mute_or_unmute(session_settings: &mut SessionSettings, audio_player: &Sink) {
+fn switch_muted(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if session_settings.is_muted {
         let song_volume = playlist_settings::get_persistent_settings()
             .get_song_settings(&session_settings.current_song_name)
@@ -507,7 +741,7 @@ fn mute_or_unmute(session_settings: &mut SessionSettings, audio_player: &Sink) {
         audio_player.set_volume(volume * song_volume);
         session_settings.is_muted = false;
         println!("unmuted");
-        println!("playlist volume: {}%", (volume * 100.0).round());
+        println!("playlist volume: {}%", volume * 100.0);
     } else {
         audio_player.set_volume(0.0);
         session_settings.is_muted = true;
@@ -515,47 +749,36 @@ fn mute_or_unmute(session_settings: &mut SessionSettings, audio_player: &Sink) {
     }
 }
 
-fn pause_or_play(audio_player: &Sink) {
+fn pause_or_play(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if audio_player.is_paused() {
-        audio_player.play();
-        println!("resumed");
+        pause(session_settings, audio_player);
     } else {
-        audio_player.pause();
-        println!("paused");
+        resume(session_settings, audio_player);
     }
 }
 
-pub fn handle_key_event(
-    key_event: &Event,
-    audio_player: &Sink,
-    session_settings: &mut SessionSettings,
-    paths: &[PathBuf],
-) {
-    let EventType::KeyPress(key) = key_event.event_type else {
-        return;
-    };
-    match key {
-        Key::F7 | Key::F4 => {
-            pause_or_play(audio_player);
+fn pause_after_song(session_settings: &mut SessionSettings) {
+    session_settings.after_song = AfterSong::Pause;
+}
+
+fn choose_next_song(session_settings: &mut SessionSettings, next_song: &str, paths: &[PathBuf]) {
+    match next_song.parse::<usize>() {
+        Ok(index) => {
+            if index >= paths.len() {
+                println!("the given index does not exist in the playlist");
+                return;
+            }
+            session_settings.after_song = AfterSong::PlaySong(index);
         }
-        Key::F11 => {
-            increase_volume(session_settings, audio_player);
+        Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == next_song) {
+            Some(index) => {
+                session_settings.after_song = AfterSong::PlaySong(index);
+            }
+            None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
         }
-        Key::F10 => {
-            decrease_volume(session_settings, audio_player);
-        }
-        Key::F12 => {
-            mute_or_unmute(session_settings, audio_player);
-        }
-        Key::F8 => {
-            next_song(audio_player, paths, session_settings);
-        }
-        Key::F6 => {
-            restart_song(audio_player, paths, session_settings);
-        }
-        Key::F9 => {
-            switch_lyrics_mode(session_settings);
-        }
-        _ => (),
     }
+}
+
+fn continue_after_song(session_settings: &mut SessionSettings) {
+    session_settings.after_song = AfterSong::Continue;
 }

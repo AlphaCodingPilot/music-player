@@ -6,7 +6,9 @@
 #![allow(clippy::fn_params_excessive_bools)]
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::cast_precision_loss)]
+#![allow(clippy::assigning_clones)]
 
+use playlist_settings::AfterSong;
 use rand::rngs::ThreadRng;
 use rand::Rng;
 use rdev::Event;
@@ -16,7 +18,7 @@ use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{fs::File, io};
 
 use crate::playlist_settings::PersistentSettings;
@@ -26,7 +28,7 @@ mod handle_input;
 mod playlist_settings;
 
 fn main() {
-    println!("Playing playlist C:\\Benutzer\\User\\Dokumente\\Programmieren\\music-player\\playlist\nType 'commands' to see available commands");
+    println!("Music player started\nType 'commands' to see available commands");
 
     let paths = get_song_paths();
     setup_playlist_settings_file();
@@ -47,6 +49,10 @@ fn main() {
         0,
         String::new(),
         song_probability_distribution,
+        Instant::now(),
+        Duration::ZERO,
+        Duration::ZERO,
+        AfterSong::Continue,
         random,
     );
 
@@ -54,13 +60,13 @@ fn main() {
         OutputStream::try_default().expect("Failed to get default output stream");
     let audio_player = Sink::try_new(&stream_handle).expect("Failed to create a new Sink");
     let (source, song_index, song_name) = play_next_song(&paths, &mut session_settings);
+    session_settings.song_duration = source
+        .total_duration()
+        .expect("Failed to get song duration");
     audio_player.append(source);
     let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&song_name);
     let track_volume = song_settings.song_volume * volume;
     audio_player.set_volume(track_volume);
-
-    session_settings.current_song_index = song_index;
-    session_settings.current_song_name = song_name;
     session_settings.song_probability_distribution[song_index] = 0;
 
     let new_messages = Arc::new(Mutex::new(Vec::new()));
@@ -98,14 +104,22 @@ fn main() {
 
         if audio_player.empty() {
             audio_player.clear();
-            let (source, new_song, song_name) = play_next_song(&paths, &mut session_settings);
+            let (source, _, song_name) = match session_settings.after_song {
+                AfterSong::PlaySong(next_song) => {
+                    let song = index_song(&paths, next_song);
+                    (song.0, next_song, song.1)
+                }
+                _ => play_next_song(&paths, &mut session_settings),
+            };
             audio_player.append(source);
-            session_settings.current_song_index = new_song;
             let song_settings =
                 playlist_settings::get_persistent_settings().get_song_settings(&song_name);
-            session_settings.current_song_name = song_name;
             audio_player.set_volume(session_settings.playback_volume() * song_settings.song_volume);
             audio_player.play();
+            if let AfterSong::Pause = session_settings.after_song {
+                audio_player.pause();
+                println!("paused");
+            }
         }
 
         thread::sleep(Duration::from_millis(100));
@@ -132,11 +146,12 @@ fn get_default_distribution(len: usize) -> Vec<u32> {
 
 fn get_song_paths() -> Vec<PathBuf> {
     fs::read_dir("playlist")
-        .expect("Failed to find \"playlist\" directory")
+        .expect("Failed to find \"playlist\" directory. Please create a folder called \"playlist\" in the \"music-player\" directory.")
         .map(|path| {
             path.expect("Failed to read paths in \"playlist\" directory")
                 .path()
         })
+        //the first path in the playlist is reserved for a subfolder to synchronize the playlist to google drive
         .skip(1)
         .collect::<Vec<PathBuf>>()
 }
@@ -145,12 +160,13 @@ fn play_next_song(
     paths: &[PathBuf],
     session_settings: &mut SessionSettings,
 ) -> (Decoder<BufReader<File>>, usize, String) {
+    let settings = playlist_settings::get_persistent_settings();
     let index = if session_settings.shuffle {
-        let settings = playlist_settings::get_persistent_settings();
         let mut modified_song_probability_distribution = Vec::new();
         for i in 0..paths.len() {
             let song_settings = settings.get_song_settings(&get_song_name(&paths[i]));
             if session_settings.exclude_lyrics && song_settings.has_lyrics {
+                modified_song_probability_distribution.push(0);
                 continue;
             }
             let p = session_settings.song_probability_distribution[i];
@@ -162,30 +178,43 @@ fn play_next_song(
             &mut session_settings.random,
         )
     } else {
-        (session_settings.current_song_index + 1) % paths.len()
+        let mut next_song = None;
+        for i in 0..paths.len() {
+            let i = (session_settings.current_song_index + i + 1) % paths.len();
+            if session_settings.exclude_lyrics
+                && settings
+                    .get_song_settings(&get_song_name(&paths[i]))
+                    .has_lyrics
+            {
+                continue;
+            }
+            next_song = Some(i);
+            break;
+        }
+        next_song.expect(
+            "exclude lyrics mode is enabled but all songs in the playlist are set to have lyrics",
+        )
     };
     if session_settings.shuffle {
         for i in 0..paths.len() {
             session_settings.song_probability_distribution[i] += 1;
         }
         session_settings.song_probability_distribution[index] = 0;
-    } else {
-        for i in 0..paths.len() {
-            session_settings.song_probability_distribution[i] = 1;
-        }
     }
     let (source, file_name) = index_song(paths, index);
-    if let Some(duration) = source.total_duration() {
-        if duration.as_secs() % 60 < 10 {
-            println!("Now playing: {file_name} ({}:0{})", duration.as_secs() / 60, duration.as_secs() % 60);
-        } else {
-            println!("Now playing: {file_name} ({}:{})", duration.as_secs() / 60, duration.as_secs() % 60);
-        }
-    }
-    let song_settings = playlist_settings::get_persistent_settings()
-        .get_song_settings(&file_name);
-    let song_volume = song_settings
-        .song_volume;
+    session_settings.current_song_index = index;
+    session_settings.current_song_name = file_name.clone();
+    session_settings.song_start = Instant::now();
+    session_settings.song_duration = source
+        .total_duration()
+        .expect("Failed to get song duration");
+    println!(
+        "Now playing: {} ({})",
+        session_settings.current_song_name,
+        format_duration(&session_settings.song_duration)
+    );
+    let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&file_name);
+    let song_volume = song_settings.song_volume;
     let playlist_volume = playlist_settings::get_persistent_settings().volume;
     if (song_volume - 0.5).abs() > f32::EPSILON {
         println!(
@@ -200,6 +229,14 @@ fn play_next_song(
     (source, index, file_name)
 }
 
+fn format_duration(duration: &Duration) -> String {
+    if duration.as_secs() % 60 < 10 {
+        format!("{}:0{}", duration.as_secs() / 60, duration.as_secs() % 60)
+    } else {
+        format!("{}:{}", duration.as_secs() / 60, duration.as_secs() % 60)
+    }
+}
+
 fn weighted_random_choice(song_probability_distribution: &[u32], random: &mut ThreadRng) -> usize {
     let mut sum = song_probability_distribution.iter().sum::<u32>();
     for (i, v) in song_probability_distribution.iter().enumerate() {
@@ -208,7 +245,13 @@ fn weighted_random_choice(song_probability_distribution: &[u32], random: &mut Th
         }
         sum -= v;
     }
-    panic!("there are no songs in the playlist")
+    if song_probability_distribution.is_empty() {
+        panic!("there are no songs in the playlist")
+    } else {
+        panic!(
+            "exclude lyrics mode is enabled but all songs in the playlist are set to have lyrics"
+        )
+    }
 }
 
 fn index_song(paths: &[PathBuf], index: usize) -> (Decoder<BufReader<File>>, String) {
@@ -230,7 +273,12 @@ fn check_new_commands(
     let mut new_messages = new_messages.lock().unwrap();
     messages.append(&mut *new_messages);
     for message in messages {
-        handle_input::handle_command(message.trim(), audio_player, playlist_properties, paths);
+        handle_input::handle_console_commands(
+            message.trim(),
+            audio_player,
+            playlist_properties,
+            paths,
+        );
     }
 }
 

@@ -1,6 +1,7 @@
 use std::{
     fs::{self, OpenOptions},
     io::Write,
+    time::{Duration, Instant},
 };
 
 use rand::rngs::ThreadRng;
@@ -14,6 +15,10 @@ pub struct SessionSettings {
     pub current_song_index: usize,
     pub current_song_name: String,
     pub song_probability_distribution: Vec<u32>,
+    pub song_start: Instant,
+    pub song_progress: Duration,
+    pub song_duration: Duration,
+    pub after_song: AfterSong,
     pub random: ThreadRng,
 }
 
@@ -26,6 +31,10 @@ impl SessionSettings {
         current_song_index: usize,
         current_song_name: String,
         song_probability_distribution: Vec<u32>,
+        song_start: Instant,
+        song_progress: Duration,
+        song_duration: Duration,
+        after_song: AfterSong,
         random: ThreadRng,
     ) -> Self {
         Self {
@@ -36,6 +45,10 @@ impl SessionSettings {
             current_song_index,
             current_song_name,
             song_probability_distribution,
+            song_start,
+            song_progress,
+            song_duration,
+            after_song,
             random,
         }
     }
@@ -47,6 +60,16 @@ impl SessionSettings {
             get_persistent_settings().volume
         }
     }
+
+    pub fn song_progress(&self) -> Duration {
+        self.song_progress + self.song_start.elapsed()
+    }
+}
+
+pub enum AfterSong {
+    Continue,
+    Pause,
+    PlaySong(usize),
 }
 
 #[derive(Serialize, Deserialize)]
