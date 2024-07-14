@@ -457,16 +457,16 @@ fn turn_on_lyrics_mode(session_settings: &mut SessionSettings) {
 fn print_status(session_settings: &SessionSettings, paths: &[PathBuf]) {
     println!("current song: {}", session_settings.current_song_name);
     let persistent_settings = playlist_settings::get_persistent_settings();
-    println!(
-        "playlist volume: {}",
-        persistent_settings.volume
-    );
+    println!("playlist volume: {}", persistent_settings.volume);
     if session_settings.is_muted {
         println!("playlist is muted");
     }
     match session_settings.after_song {
         AfterSong::Pause => println!("the playlist will pause after the current song"),
-        AfterSong::PlaySong(next_song) => println!("the next song is set as {}", crate::get_song_name(&paths[next_song])),
+        AfterSong::PlaySong(next_song) => println!(
+            "the next song is set as {}",
+            crate::get_song_name(&paths[next_song])
+        ),
         AfterSong::Continue => (),
     }
     if !session_settings.key_events_enabled {
@@ -478,14 +478,17 @@ fn print_status(session_settings: &SessionSettings, paths: &[PathBuf]) {
     if session_settings.exclude_lyrics {
         println!("no lyrics mode is enabled");
     }
-    let song_settings = persistent_settings
-        .get_song_settings(&session_settings.current_song_name);
+    let song_settings = persistent_settings.get_song_settings(&session_settings.current_song_name);
     println!(
         "current song: {} ({})",
         session_settings.current_song_name,
         crate::format_duration(&session_settings.song_duration)
     );
-    println!("song volume: {}% (playing at {}%)", song_settings.song_volume, session_settings.playback_volume());
+    println!(
+        "song volume: {}% (playing at {}%)",
+        song_settings.song_volume,
+        session_settings.playback_volume()
+    );
     if song_settings.starred {
         println!("this song is starred");
     }
@@ -503,9 +506,7 @@ fn print_progress(session_settings: &SessionSettings) {
     println!(
         "{}: {}/{} ({}%)",
         session_settings.current_song_name,
-        crate::format_duration(
-            &session_settings.song_progress()
-        ),
+        crate::format_duration(&session_settings.song_progress()),
         crate::format_duration(&session_settings.song_duration),
         ((session_settings.song_progress().as_secs_f32()
             / session_settings.song_duration.as_secs_f32())
