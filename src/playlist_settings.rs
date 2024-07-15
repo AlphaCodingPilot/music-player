@@ -1,12 +1,15 @@
 use std::{
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
 use rand::rngs::ThreadRng;
 use serde::{Deserialize, Serialize};
 
+use crate::{get_default_distribution, utils};
+
+#[derive(Clone)]
 pub struct SessionSettings {
     pub is_muted: bool,
     pub key_events_enabled: bool,
@@ -16,44 +19,31 @@ pub struct SessionSettings {
     pub current_song_name: String,
     pub song_probability_distribution: Vec<u32>,
     pub song_start: Instant,
-    pub song_progress: Duration,
+    song_progress: Duration,
     pub song_duration: Duration,
     pub after_song: AfterSong,
     pub random: ThreadRng,
 }
 
 impl SessionSettings {
-    pub fn new(
-        is_muted: bool,
-        key_events_enabled: bool,
-        shuffle: bool,
-        exclude_lyrics: bool,
-        current_song_index: usize,
-        current_song_name: String,
-        song_probability_distribution: Vec<u32>,
-        song_start: Instant,
-        song_progress: Duration,
-        song_duration: Duration,
-        after_song: AfterSong,
-        random: ThreadRng,
-    ) -> Self {
+    pub fn new(paths: &[PathBuf]) -> Self {
         Self {
-            is_muted,
-            key_events_enabled,
-            shuffle,
-            exclude_lyrics,
-            current_song_index,
-            current_song_name,
-            song_probability_distribution,
-            song_start,
-            song_progress,
-            song_duration,
-            after_song,
-            random,
+            is_muted: false,
+            key_events_enabled: true,
+            shuffle: true,
+            exclude_lyrics: false,
+            current_song_index: 0,
+            current_song_name: String::new(),
+            song_probability_distribution: get_default_distribution(paths.len()),
+            song_start: Instant::now(),
+            song_progress: Duration::ZERO,
+            song_duration: Duration::ZERO,
+            after_song: AfterSong::Continue,
+            random: rand::thread_rng(),
         }
     }
 
-    pub fn playback_volume(&self) -> f32 {
+    pub fn playback_playlist_volume(&self) -> f32 {
         if self.is_muted {
             0.0
         } else {
@@ -64,8 +54,13 @@ impl SessionSettings {
     pub fn song_progress(&self) -> Duration {
         self.song_progress + self.song_start.elapsed()
     }
+
+    pub fn add_song_progress(&mut self, progress: Duration) {
+        self.song_progress += progress;
+    }
 }
 
+#[derive(Clone, Debug)]
 pub enum AfterSong {
     Continue,
     Pause,
@@ -132,15 +127,7 @@ pub fn update_song_settings(song: String, settings: SongSettings) {
 }
 
 pub fn update_settings(settings: &PersistentSettings) {
-    let json = to_json(settings);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open("playlist-settings.json")
-        .expect("Failed to open file");
-    file.write_all(json.as_bytes())
-        .expect("Failed to write to file");
+    utils::write_to_file("playlist-settings.json", &to_json(settings));
 }
 
 pub fn to_json(settings: &PersistentSettings) -> String {

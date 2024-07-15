@@ -3,13 +3,18 @@ use std::{fs, path::PathBuf, process, time::Instant};
 use rdev::{Event, EventType, Key};
 use rodio::{Sink, Source};
 
-use crate::playlist_settings::{self, AfterSong, SessionSettings};
+use crate::{
+    crash_reporter::CrashReporter,
+    playlist_settings::{self, AfterSong, SessionSettings},
+    utils,
+};
 
 pub fn handle_console_commands(
     input_buffer: &str,
     audio_player: &Sink,
     session_settings: &mut SessionSettings,
     paths: &[PathBuf],
+    crash_reporter: &mut CrashReporter,
 ) {
     let input = input_buffer.trim().to_lowercase();
     let input = input.replace(' ', "");
@@ -49,7 +54,7 @@ pub fn handle_console_commands(
             print_volume(session_settings);
         }
         "nextsong" | "next" | "n" | "skip" => {
-            next_song(audio_player, paths, session_settings);
+            next_song(audio_player, paths, session_settings, crash_reporter);
         }
         "restartsong" | "restart" | "rs" => {
             restart_song(audio_player, paths, session_settings);
@@ -129,7 +134,7 @@ pub fn handle_console_commands(
             print_commands();
         }
         "terminate" | "exit" | "close" => {
-            exit_program();
+            exit_program(crash_reporter);
         }
         msg if msg.starts_with("choosesong") => {
             let new_song = msg.split_once("choosesong").unwrap().1;
@@ -188,6 +193,7 @@ pub fn handle_key_event(
     audio_player: &Sink,
     session_settings: &mut SessionSettings,
     paths: &[PathBuf],
+    crash_reporter: &mut CrashReporter,
 ) {
     let EventType::KeyPress(key) = key_event.event_type else {
         return;
@@ -206,7 +212,7 @@ pub fn handle_key_event(
             switch_muted(session_settings, audio_player);
         }
         Key::F8 => {
-            next_song(audio_player, paths, session_settings);
+            next_song(audio_player, paths, session_settings, crash_reporter);
         }
         Key::F6 => {
             restart_song(audio_player, paths, session_settings);
@@ -221,7 +227,7 @@ pub fn handle_key_event(
 fn pause(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if !audio_player.is_paused() {
         audio_player.pause();
-        session_settings.song_progress += session_settings.song_start.elapsed();
+        session_settings.add_song_progress(session_settings.song_start.elapsed());
         println!("paused");
     }
 }
@@ -482,12 +488,12 @@ fn print_status(session_settings: &SessionSettings, paths: &[PathBuf]) {
     println!(
         "current song: {} ({})",
         session_settings.current_song_name,
-        crate::format_duration(&session_settings.song_duration)
+        utils::format_duration(&session_settings.song_duration)
     );
     println!(
         "song volume: {}% (playing at {}%)",
         song_settings.song_volume,
-        session_settings.playback_volume()
+        session_settings.playback_playlist_volume()
     );
     if song_settings.starred {
         println!("this song is starred");
@@ -506,8 +512,8 @@ fn print_progress(session_settings: &SessionSettings) {
     println!(
         "{}: {}/{} ({}%)",
         session_settings.current_song_name,
-        crate::format_duration(&session_settings.song_progress()),
-        crate::format_duration(&session_settings.song_duration),
+        utils::format_duration(&session_settings.song_progress()),
+        utils::format_duration(&session_settings.song_duration),
         ((session_settings.song_progress().as_secs_f32()
             / session_settings.song_duration.as_secs_f32())
             * 100.0)
@@ -549,8 +555,9 @@ fn print_commands() {
     println!("{contents}");
 }
 
-fn exit_program() {
+fn exit_program(crash_reporter: &mut CrashReporter) {
     println!("closing audio player");
+    crash_reporter.disable();
     process::exit(0);
 }
 
@@ -639,7 +646,7 @@ fn choose_song_by_index(
         .expect("Failed to get song duration");
     println!(
         "Now playing: {file_name} ({})",
-        crate::format_duration(&session_settings.song_duration)
+        utils::format_duration(&session_settings.song_duration)
     );
     let settings = &playlist_settings::get_persistent_settings();
     let song_settings = settings.get_song_settings(&file_name);
@@ -687,18 +694,30 @@ fn restart_song(audio_player: &Sink, paths: &[PathBuf], session_settings: &mut S
     let (source, song_name) = crate::index_song(paths, session_settings.current_song_index);
     audio_player.append(source);
     let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&song_name);
-    audio_player.set_volume(session_settings.playback_volume() * song_settings.song_volume);
+    audio_player
+        .set_volume(session_settings.playback_playlist_volume() * song_settings.song_volume);
     audio_player.play();
     println!("restarting {song_name}");
     session_settings.current_song_name = song_name;
 }
 
-fn next_song(audio_player: &Sink, paths: &[PathBuf], session_settings: &mut SessionSettings) {
+fn next_song(
+    audio_player: &Sink,
+    paths: &[PathBuf],
+    session_settings: &mut SessionSettings,
+    crash_reporter: &mut CrashReporter,
+) {
     audio_player.clear();
-    let (source, _, song_name) = crate::play_next_song(paths, session_settings);
+    let index = crate::get_next_song_index(session_settings, paths);
+    crash_reporter.next_song(
+        crate::get_song_name(&paths[index]),
+        session_settings.clone(),
+    );
+    let (source, _, song_name) = crate::play_next_song(index, paths, session_settings);
     audio_player.append(source);
     let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&song_name);
-    audio_player.set_volume(session_settings.playback_volume() * song_settings.song_volume);
+    audio_player
+        .set_volume(session_settings.playback_playlist_volume() * song_settings.song_volume);
     session_settings.after_song = AfterSong::Continue;
     audio_player.play();
 }
@@ -752,9 +771,9 @@ fn switch_muted(session_settings: &mut SessionSettings, audio_player: &Sink) {
 
 fn pause_or_play(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if audio_player.is_paused() {
-        pause(session_settings, audio_player);
-    } else {
         resume(session_settings, audio_player);
+    } else {
+        pause(session_settings, audio_player);
     }
 }
 
