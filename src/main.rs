@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, thread};
-use std::{fs::File, io};
+use std::fs::File;
 
 mod crash_reporter;
 mod handle_input;
@@ -38,22 +38,24 @@ fn main() {
         println!("playlist volume: {}%", (volume * 100.0).round());
     }
 
-    let mut session_settings = SessionSettings::new(&paths);
+    let mut session_settings = SessionSettings::default();
 
     let (_stream, stream_handle) =
         OutputStream::try_default().expect("Failed to get default output stream");
     let audio_player = Sink::try_new(&stream_handle).expect("Failed to create a new Sink");
     let index = get_next_song_index(&mut session_settings, &paths);
     crash_reporter.next_song(get_song_name(&paths[index]), session_settings.clone());
-    let (source, song_index, song_name) = play_next_song(index, &paths, &mut session_settings);
+    let (source, _, song_name) = play_next_song(index, &paths, &mut session_settings);
     session_settings.song_duration = source
-        .total_duration()
-        .expect("Failed to get song duration");
+        .total_duration();
     audio_player.append(source);
-    let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&song_name);
+    let mut persistent_settings = playlist_settings::get_persistent_settings();
+    let song_settings = persistent_settings.get_song_settings(&song_name);
     let track_volume = song_settings.song_volume * volume;
     audio_player.set_volume(track_volume);
-    session_settings.song_probability_distribution[song_index] = 0;
+    persistent_settings.set_song_probability(&song_name, 0);
+    persistent_settings.accumulate_play_count(&song_name);
+    playlist_settings::update_settings(&persistent_settings);
 
     crash_reporter.set_session_settings(session_settings.clone());
 
@@ -61,11 +63,8 @@ fn main() {
     let new_messages_clone = Arc::clone(&new_messages);
 
     thread::spawn(move || loop {
-        let mut input_buffer = String::new();
-        io::stdin()
-            .read_line(&mut input_buffer)
-            .expect("Failed to read input");
-        new_messages_clone.lock().unwrap().push(input_buffer);
+        let input = utils::get_console_input();
+        new_messages_clone.lock().unwrap().push(input);
     });
 
     let new_key_events = Arc::new(Mutex::new(Vec::new()));
@@ -73,9 +72,7 @@ fn main() {
 
     thread::spawn(move || {
         rdev::listen(move |event| {
-            if session_settings.key_events_enabled {
-                new_key_events_clone.lock().unwrap().push(event);
-            }
+            new_key_events_clone.lock().unwrap().push(event);
         })
         .expect("Failed to listen for keyboard events");
     });
@@ -121,6 +118,7 @@ fn main() {
                 audio_player.pause();
                 println!("paused");
             }
+            session_settings.after_song = AfterSong::Continue;
         }
 
         thread::sleep(Duration::from_millis(100));
@@ -162,27 +160,30 @@ fn play_next_song(
     paths: &[PathBuf],
     session_settings: &mut SessionSettings,
 ) -> (Decoder<BufReader<File>>, usize, String) {
+    let mut persistent_settings = playlist_settings::get_persistent_settings();
     if session_settings.shuffle {
         for i in 0..paths.len() {
-            session_settings.song_probability_distribution[i] += 1;
+            persistent_settings.set_song_probability(paths[i].to_str().expect("path has no name"), persistent_settings.get_probability_distribution(paths)[i] + 1);
         }
-        session_settings.song_probability_distribution[index] = 0;
+        persistent_settings.set_song_probability(paths[index].to_str().expect("path has no name"), 0);
     }
+    persistent_settings.accumulate_play_count(paths[index].to_str().expect("path has no name"));
+    playlist_settings::update_settings(&persistent_settings);
     let (source, file_name) = index_song(paths, index);
     session_settings.current_song_index = index;
     session_settings.current_song_name = file_name.clone();
-    session_settings.song_start = Instant::now();
+    session_settings.duration_start = Instant::now();
     session_settings.song_duration = source
-        .total_duration()
-        .expect("Failed to get song duration");
+        .total_duration();
+    session_settings.reset_song_progress();
     println!(
         "Now playing: {} ({})",
         session_settings.current_song_name,
-        utils::format_duration(&session_settings.song_duration)
+        session_settings.format_song_duration(),
     );
-    let song_settings = playlist_settings::get_persistent_settings().get_song_settings(&file_name);
+    let song_settings = persistent_settings.get_song_settings(&file_name);
     let song_volume = song_settings.song_volume;
-    let playlist_volume = playlist_settings::get_persistent_settings().volume;
+    let playlist_volume = persistent_settings.volume;
     if (song_volume - 0.5).abs() > f32::EPSILON {
         println!(
             "Song volume: {}% (playing at {}% volume)",
@@ -206,7 +207,7 @@ fn get_next_song_index(session_settings: &mut SessionSettings, paths: &[PathBuf]
                 modified_song_probability_distribution.push(0);
                 continue;
             }
-            let p = session_settings.song_probability_distribution[i];
+            let p = settings.get_probability_distribution(paths)[i];
             let star_factor = if song_settings.starred { 2 } else { 1 };
             modified_song_probability_distribution.push(p * star_factor);
         }

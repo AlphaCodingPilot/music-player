@@ -90,7 +90,7 @@ pub fn handle_console_commands(
             switch_shuffling(session_settings, paths);
         }
         "resetprobabilities" => {
-            reset_probabilities(paths, session_settings);
+            reset_probabilities(paths);
         }
         "star" | "s" => {
             star(session_settings);
@@ -128,7 +128,10 @@ pub fn handle_console_commands(
             print_progress(session_settings);
         }
         "songprobabilities" | "probabilities" | "showprobabilities" => {
-            print_song_probabilities(paths, session_settings);
+            print_song_probabilities(paths);
+        }
+        "playcount" => {
+            print_play_count(&session_settings.current_song_name);
         }
         "commands" | "help" => {
             print_commands();
@@ -198,6 +201,9 @@ pub fn handle_key_event(
     let EventType::KeyPress(key) = key_event.event_type else {
         return;
     };
+    if !session_settings.key_events_enabled {
+        return;
+    }
     match key {
         Key::F7 | Key::F4 => {
             pause_or_play(session_settings, audio_player);
@@ -227,7 +233,7 @@ pub fn handle_key_event(
 fn pause(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if !audio_player.is_paused() {
         audio_player.pause();
-        session_settings.add_song_progress(session_settings.song_start.elapsed());
+        session_settings.add_song_progress(session_settings.duration_start.elapsed());
         println!("paused");
     }
 }
@@ -235,7 +241,7 @@ fn pause(session_settings: &mut SessionSettings, audio_player: &Sink) {
 fn resume(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if audio_player.is_paused() {
         audio_player.play();
-        session_settings.song_start = Instant::now();
+        session_settings.duration_start = Instant::now();
         println!("resumed");
     }
 }
@@ -349,13 +355,15 @@ fn switch_keyboard_input(session_settings: &mut SessionSettings) {
 }
 
 fn enable_shuffling(session_settings: &mut SessionSettings, paths: &[PathBuf]) {
+    let mut persistent_settings = playlist_settings::get_persistent_settings();
     if !session_settings.shuffle {
         session_settings.shuffle = true;
         for i in 0..paths.len() {
-            session_settings.song_probability_distribution[i] = 1;
+            persistent_settings.set_song_probability(paths[i].to_str().expect("path has no name"), 1);
         }
         println!("shuffle playlist enabled");
     }
+    playlist_settings::update_settings(&persistent_settings);
 }
 
 fn disable_shuffling(session_settings: &mut SessionSettings) {
@@ -366,22 +374,26 @@ fn disable_shuffling(session_settings: &mut SessionSettings) {
 }
 
 fn switch_shuffling(session_settings: &mut SessionSettings, paths: &[PathBuf]) {
+    let mut persistent_settings = playlist_settings::get_persistent_settings();
     if session_settings.shuffle {
         session_settings.shuffle = false;
         for i in 0..paths.len() {
-            session_settings.song_probability_distribution[i] = 1;
+            persistent_settings.set_song_probability(paths[i].to_str().expect("path has no name"), 1);
         }
         println!("shuffle playlist disabled");
     } else {
         session_settings.shuffle = true;
         println!("shuffle playlist enabled");
     }
+    playlist_settings::update_settings(&persistent_settings);
 }
 
-fn reset_probabilities(paths: &[PathBuf], session_settings: &mut SessionSettings) {
+fn reset_probabilities(paths: &[PathBuf]) {
+    let mut persistent_settings = playlist_settings::get_persistent_settings();
     for i in 0..paths.len() {
-        session_settings.song_probability_distribution[i] = 1;
+        persistent_settings.set_song_probability(paths[i].to_str().expect("path has no name"), 1);
     }
+    playlist_settings::update_settings(&persistent_settings);
 }
 
 fn star(session_settings: &SessionSettings) {
@@ -486,10 +498,10 @@ fn print_status(session_settings: &SessionSettings, paths: &[PathBuf]) {
     }
     let song_settings = persistent_settings.get_song_settings(&session_settings.current_song_name);
     println!(
-        "current song: {} ({})",
-        session_settings.current_song_name,
-        utils::format_duration(&session_settings.song_duration)
+        "progress: ({})",
+        session_settings.format_song_duration()
     );
+    print_play_count(&session_settings.current_song_name);
     println!(
         "song volume: {}% (playing at {}%)",
         song_settings.song_volume,
@@ -509,25 +521,28 @@ fn print_index(session_settings: &SessionSettings) {
 }
 
 fn print_progress(session_settings: &SessionSettings) {
-    println!(
-        "{}: {}/{} ({}%)",
-        session_settings.current_song_name,
-        utils::format_duration(&session_settings.song_progress()),
-        utils::format_duration(&session_settings.song_duration),
-        ((session_settings.song_progress().as_secs_f32()
-            / session_settings.song_duration.as_secs_f32())
+    match &session_settings.song_duration {
+        Some(duration) => println!(
+            "{}: {}/{} ({}%)",
+            session_settings.current_song_name,
+            utils::format_duration(&session_settings.song_progress()),
+            utils::format_duration(duration),
+            ((session_settings.song_progress().as_secs_f32()
+            / duration.as_secs_f32())
             * 100.0)
             .round()
-    );
+        ),
+        None => println!("{}: {}", session_settings.current_song_name, utils::format_duration(&session_settings.song_progress())),
+    }
 }
 
-fn print_song_probabilities(paths: &[PathBuf], session_settings: &SessionSettings) {
+fn print_song_probabilities(paths: &[PathBuf]) {
     let settings = playlist_settings::get_persistent_settings();
     let mut probabilities = Vec::new();
     let mut sum = 0;
     for i in 0..paths.len() {
         let song_settings = settings.get_song_settings(&crate::get_song_name(&paths[i]));
-        let base_probability = session_settings.song_probability_distribution[i];
+        let base_probability = settings.get_probability_distribution(paths)[i];
         let p = base_probability;
         let star_factor = if song_settings.starred { 2 } else { 1 };
         sum += p * star_factor;
@@ -543,7 +558,7 @@ fn print_song_probabilities(paths: &[PathBuf], session_settings: &SessionSetting
                 p.1,
             )
         })
-        .map(|(song, percentage, base)| format!("{song} - {percentage:.2}% ({base}"))
+        .map(|(song, percentage, base)| format!("{song} - {percentage:.2}% ({base})"))
         .collect::<Vec<String>>()
         .join("\n");
     println!("{message}");
@@ -642,13 +657,12 @@ fn choose_song_by_index(
     audio_player.clear();
     let (source, file_name) = crate::index_song(paths, index);
     session_settings.song_duration = source
-        .total_duration()
-        .expect("Failed to get song duration");
+        .total_duration();
     println!(
         "Now playing: {file_name} ({})",
-        utils::format_duration(&session_settings.song_duration)
+        session_settings.format_song_duration(),
     );
-    let settings = &playlist_settings::get_persistent_settings();
+    let mut settings = playlist_settings::get_persistent_settings();
     let song_settings = settings.get_song_settings(&file_name);
     let song_volume = song_settings.song_volume;
     let playlist_volume = settings.volume;
@@ -669,14 +683,27 @@ fn choose_song_by_index(
     audio_player.play();
     session_settings.current_song_index = index;
     session_settings.current_song_name = file_name;
-    session_settings.song_start = Instant::now();
+    session_settings.duration_start = Instant::now();
     session_settings.after_song = AfterSong::Continue;
     if session_settings.shuffle {
+        let mut choosable_songs = 0;
         for i in 0..paths.len() {
-            session_settings.song_probability_distribution[i] += 1;
+            settings.set_song_probability(paths[i].to_str().expect("path has no name"), settings.get_probability_distribution(paths)[i] + 1);
+            if !session_settings.exclude_lyrics
+                || !settings
+                    .get_song_settings(&crate::get_song_name(&paths[i]))
+                    .has_lyrics
+            {
+                choosable_songs += 1;
+            }
         }
-        session_settings.song_probability_distribution[index] = 0;
+        settings.set_song_probability(paths[index].to_str().expect("path has no name"), 0);
+        if choosable_songs == 1 {
+            //if the song that was last played is the only song that can be played, it can be chosen again
+            settings.set_song_probability(paths[index].to_str().expect("path has no name"), 1);
+        }
     }
+    playlist_settings::update_settings(&settings);
 }
 
 fn switch_lyrics_mode(session_settings: &mut SessionSettings) {
@@ -801,4 +828,9 @@ fn choose_next_song(session_settings: &mut SessionSettings, next_song: &str, pat
 
 fn continue_after_song(session_settings: &mut SessionSettings) {
     session_settings.after_song = AfterSong::Continue;
+}
+
+fn print_play_count(song: &str) {
+    let play_count = playlist_settings::get_persistent_settings().get_song_play_count(song);
+    println!("{song} has been played {play_count} times");
 }

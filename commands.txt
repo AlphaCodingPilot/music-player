@@ -1,5 +1,3 @@
-
---------
 COMMANDS
 pause (p / F7 / F4)                             - pauses the playlist
 resume (p / F7)                                 - resumes the playlist
@@ -32,5 +30,7 @@ has no lyrics                                   - sets the currently playing as 
 no lyrics mode (l / F9)                         - activated no lyrics mode, which excludes songs with lyrics from the playlist
 lyrics mode (l / F9)                            - deactivates no lyrics mode
 commands                                        - lists all commands
+progress                                        - prints the progress of the current song
 probabilities                                   - lists the probabilities of a songs in the playlist to be chosen
+play counts                                     - prints how many times the currently playing song has been played
 exit                                            - exits the program

@@ -1,5 +1,5 @@
-use std::{fs::OpenOptions, io::Write, time::Duration};
 use rand::{rngs::ThreadRng, Rng};
+use std::{fs::OpenOptions, io::{self, Write}, time::Duration};
 
 pub fn weighted_random_selection(
     probability_distribution: &[u32],
@@ -8,11 +8,13 @@ pub fn weighted_random_selection(
     if probability_distribution.len() == 1 {
         return 0;
     }
-    assert!(!probability_distribution.is_empty(), "there are no songs in the playlist");
+    assert!(
+        !probability_distribution.is_empty(),
+        "there are no songs in the playlist"
+    );
     let mut sum = probability_distribution.iter().sum::<u32>();
     assert_ne!(
-        sum,
-        0,
+        sum, 0,
         "exclude lyrics mode is enabled but all songs in the playlist are set to have lyrics"
     );
     for (i, p) in probability_distribution.iter().enumerate() {
@@ -41,4 +43,12 @@ pub fn write_to_file(file: &str, contents: &str) {
         .expect("Failed to open file");
     file.write_all(contents.as_bytes())
         .expect("Failed to write to file");
+}
+
+pub fn get_console_input() -> String {
+    let mut input_buffer = String::new();
+    io::stdin()
+        .read_line(&mut input_buffer)
+        .expect("Failed to read input");
+    input_buffer
 }

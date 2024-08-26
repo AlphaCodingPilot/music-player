@@ -2,5 +2,5 @@
 /.vscode
 /playlist/*
 /playlist-settings.json
-/update.cmd
+/*.cmd
 /todo.txt

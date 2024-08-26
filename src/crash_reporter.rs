@@ -1,6 +1,6 @@
 use chrono::Local;
 use rdev::Event;
-use std::{fmt::Display, thread, time::Duration};
+use std::fmt::Display;
 
 use crate::{
     playlist_settings::{AfterSong, SessionSettings},
@@ -65,7 +65,7 @@ impl Display for CrashReporter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "crash report {}\n",
+            "CRASH REPORT {}\n",
             Local::now().format("%H:%M %d.%m.%Y")
         )?;
         let Some(session_settings) = &self.session_settings else {
@@ -86,7 +86,7 @@ impl Display for CrashReporter {
             },
             session_settings.current_song_name,
             utils::format_duration(&session_settings.song_progress()),
-            utils::format_duration(&session_settings.song_duration)
+            session_settings.format_song_duration()
         )?;
         match &self.crash_cause {
             CrashCause::Command(command) => write!(f, "the error occurred as the command '{command}' was processed"),
@@ -106,7 +106,8 @@ impl Drop for CrashReporter {
             return;
         }
         utils::write_to_file("crash-report.txt", &format!("{self}"));
-        println!("program crashed! crash report can be found at crash-report.txt");
-        thread::sleep(Duration::from_secs(10));
+        println!("program crashed! crash report can be found at crash-report.txt\nType anything to close the window");
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).expect("Failed to read console input");
     }
 }
