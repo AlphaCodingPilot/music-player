@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf, process, time::Instant};
 
+use itertools::Itertools;
 use rdev::{Event, EventType, Key};
 use rodio::{Sink, Source};
 
@@ -233,7 +234,7 @@ pub fn handle_key_event(
 fn pause(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if !audio_player.is_paused() {
         audio_player.pause();
-        session_settings.add_song_progress(session_settings.duration_start.elapsed());
+        session_settings.pause();
         println!("paused");
     }
 }
@@ -242,6 +243,7 @@ fn resume(session_settings: &mut SessionSettings, audio_player: &Sink) {
     if audio_player.is_paused() {
         audio_player.play();
         session_settings.duration_start = Instant::now();
+        session_settings.resume();
         println!("resumed");
     }
 }
@@ -551,6 +553,8 @@ fn print_song_probabilities(paths: &[PathBuf]) {
     let message = probabilities
         .into_iter()
         .enumerate()
+        .sorted_by_key(|(p, _)| *p)
+        .rev()
         .map(|(i, p)| {
             (
                 crate::get_song_name(&paths[i]),
@@ -637,11 +641,7 @@ fn choose_song(
         }
         Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == new_song) {
             Some(index) => {
-                audio_player.clear();
-                let (source, song) = crate::index_song(paths, index);
-                audio_player.append(source);
-                audio_player.play();
-                println!("Now playing {song}");
+                choose_song_by_index(audio_player, paths, index, session_settings);
             }
             None => println!("this command requires a positive integer as an index or the name of a song in the playlist")
         }
@@ -685,6 +685,7 @@ fn choose_song_by_index(
     session_settings.current_song_name = file_name;
     session_settings.duration_start = Instant::now();
     session_settings.after_song = AfterSong::Continue;
+    session_settings.reset_song_progress();
     if session_settings.shuffle {
         let mut choosable_songs = 0;
         for i in 0..paths.len() {
@@ -806,6 +807,7 @@ fn pause_or_play(session_settings: &mut SessionSettings, audio_player: &Sink) {
 
 fn pause_after_song(session_settings: &mut SessionSettings) {
     session_settings.after_song = AfterSong::Pause;
+    println!("pausing after current song");
 }
 
 fn choose_next_song(session_settings: &mut SessionSettings, next_song: &str, paths: &[PathBuf]) {
@@ -816,6 +818,7 @@ fn choose_next_song(session_settings: &mut SessionSettings, next_song: &str, pat
                 return;
             }
             session_settings.after_song = AfterSong::PlaySong(index);
+            println!("next song is set to {}", crate::get_song_name(&paths[index]));
         }
         Err(_) => match paths.iter().position(|song| crate::get_song_name(song).replace(' ', "") == next_song) {
             Some(index) => {
@@ -828,6 +831,7 @@ fn choose_next_song(session_settings: &mut SessionSettings, next_song: &str, pat
 
 fn continue_after_song(session_settings: &mut SessionSettings) {
     session_settings.after_song = AfterSong::Continue;
+    println!("the playlist will continue after the current song");
 }
 
 fn print_play_count(song: &str) {

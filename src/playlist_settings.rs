@@ -17,6 +17,7 @@ pub struct SessionSettings {
     pub current_song_name: String,
     pub duration_start: Instant,
     song_progress: Duration,
+    song_progress_start: Instant,
     pub song_duration: Option<Duration>,
     pub after_song: AfterSong,
     pub random: ThreadRng,
@@ -42,12 +43,17 @@ impl SessionSettings {
         }
     }
 
-    pub fn add_song_progress(&mut self, progress: Duration) {
-        self.song_progress += progress;
+    pub fn pause(&mut self) {
+        self.song_progress += self.song_progress_start.elapsed();
+    }
+
+    pub fn resume(&mut self) {
+        self.song_progress_start = Instant::now();
     }
     
     pub fn reset_song_progress(&mut self) {
         self.song_progress = Duration::ZERO;
+        self.song_progress_start = Instant::now();
     }
 }
 
@@ -62,6 +68,7 @@ impl Default for SessionSettings {
             current_song_name: String::new(),
             duration_start: Instant::now(),
             song_progress: Duration::ZERO,
+            song_progress_start: Instant::now(),
             song_duration: None,
             after_song: AfterSong::Continue,
             random: rand::thread_rng(),
@@ -174,15 +181,15 @@ pub fn update_song_settings(song: String, settings: SongSettings) {
 }
 
 pub fn update_settings(settings: &PersistentSettings) {
-    utils::write_to_file("playlist-settings.json", &to_json(settings));
+    utils::write_to_file("settings\\playlist-settings.json", &to_json(settings));
 }
 
 pub fn to_json(settings: &PersistentSettings) -> String {
-    serde_json::to_string(settings).expect("json conversion failed")
+    serde_json::to_string_pretty(settings).expect("json conversion failed")
 }
 
 pub fn get_persistent_settings() -> PersistentSettings {
-    let file_path = "playlist-settings.json";
+    let file_path = "settings\\playlist-settings.json";
     let playlist_settings =
         fs::read_to_string(file_path).expect("Failed to read playlist-settings file");
     from_json(&playlist_settings)

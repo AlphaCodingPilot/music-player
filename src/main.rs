@@ -116,6 +116,7 @@ fn main() {
             audio_player.play();
             if let AfterSong::Pause = session_settings.after_song {
                 audio_player.pause();
+                session_settings.pause();
                 println!("paused");
             }
             session_settings.after_song = AfterSong::Continue;
